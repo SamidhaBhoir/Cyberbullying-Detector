@@ -2,9 +2,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 import json
-import joblib
+import pickle
+import re
 import requests
 import os
+import numpy as np
 from dotenv import load_dotenv
 import logging
 
@@ -13,15 +15,47 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# Load model and vectorizer (ensure files exist)
-if not os.path.exists('model.pkl') or not os.path.exists('vectorizer.pkl'):
-    raise FileNotFoundError("Model files (model.pkl, vectorizer.pkl) not found. Run api.ipynb first.")
+# Load LSTM model and artifacts (ensure files exist)
+for _required_file in ['lstm_bully_model.keras', 'lstm_tokenizer.pkl', 'lstm_meta.pkl']:
+    if not os.path.exists(_required_file):
+        raise FileNotFoundError(f"Required file not found: {_required_file}. Run bully_detection.ipynb first.")
 
 try:
-    model = joblib.load('model.pkl')
-    vectorizer = joblib.load('vectorizer.pkl')
+    import tensorflow as tf
+    from tensorflow.keras.preprocessing.sequence import pad_sequences
+
+    model = tf.keras.models.load_model('lstm_bully_model.keras')
+
+    with open('lstm_tokenizer.pkl', 'rb') as _f:
+        tokenizer = pickle.load(_f)
+
+    with open('lstm_meta.pkl', 'rb') as _f:
+        meta = pickle.load(_f)
+
+    MAX_SEQ_LEN = meta['MAX_SEQ_LEN']
+
 except Exception as e:
-    raise RuntimeError(f"Failed to load model: {e}")
+    raise RuntimeError(f"Failed to load LSTM model: {e}")
+
+
+def clean_text(text: str) -> str:
+    """Replicate the same preprocessing used during model training."""
+    text = text.lower()
+    text = re.sub(r'http\S+|www\S+', '', text)
+    text = re.sub(r'@\w+', '', text)
+    text = re.sub(r'#\w+', '', text)
+    text = re.sub(r'[^a-z\s]', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def predict_bully_prob(text: str) -> float:
+    """Return the bully probability (0-1) for the given text."""
+    cleaned = clean_text(text)
+    seq = tokenizer.texts_to_sequences([cleaned])
+    padded = pad_sequences(seq, maxlen=MAX_SEQ_LEN, padding='post', truncating='post')
+    prob = model.predict(padded, verbose=0)[0][0]
+    return float(prob)
 
 # Instagram credentials (move to env vars for security)
 load_dotenv()
@@ -63,14 +97,12 @@ async def webhook(request: Request):
                 prediction = 1  # Flag as bully
                 logger.info(f"Comment: '{comment_text}' | Contains explicit keywords | Classification: BULLY (explicit)")
             else:
-                # Preprocess and classify using model
-                comment_vectorized = vectorizer.transform([comment_text])
-                probabilities = model.predict_proba(comment_vectorized)[0]
-                bully_prob = probabilities[1]  # Probability of being bully
-                
+                # Preprocess and classify using LSTM model
+                bully_prob = predict_bully_prob(comment_text)
+
                 # Lower threshold for more sensitivity (0.4 instead of 0.5)
                 prediction = 1 if bully_prob > 0.4 else 0
-                
+
                 logger.info(f"Comment: '{comment_text}' | Bully prob: {bully_prob:.3f} | Classification: {'BULLY' if prediction == 1 else 'NOT BULLY'}")
 
             if prediction == 1:  # Bully
