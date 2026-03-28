@@ -1,7 +1,7 @@
-fastapi
-uvicorn[standard]
-scikit-learn
-pandas
-numpy
-joblib
-python-multipart
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+requests==2.32.3
+pandas==2.2.3
+scikit-learn==1.5.2
+joblib==1.4.2
+python-dotenv==1.0.1
